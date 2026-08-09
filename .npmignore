@@ -1,0 +1,8 @@
+test/
+examples/
+src/
+tsup.config.ts
+tsconfig.json
+eslint.config.js
+.gitignore
+AGENTS.md

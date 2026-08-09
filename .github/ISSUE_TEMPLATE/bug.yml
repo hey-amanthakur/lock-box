@@ -1,0 +1,61 @@
+---
+name: Bug Report
+about: Report a bug or unexpected behavior
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report! Please fill out the sections below.
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      description: Run `node --version`
+      placeholder: "20.19.0"
+    validations:
+      required: true
+  - type: input
+    id: package-version
+    attributes:
+      label: Lock-Box version
+      description: Run `npm ls @hey-amanthakur/lock-box`
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: backend
+    attributes:
+      label: Backend
+      description: e.g. in-memory, Redis, custom
+      placeholder: "Redis"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: A code snippet or link to a repo that reproduces the issue
+      render: typescript
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output / logs
+      render: shell
+    validations:
+      required: false
