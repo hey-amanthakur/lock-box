@@ -89,16 +89,18 @@ describe('DistributedLock', () => {
 
   it('a failed renewal detects a lost lease, fires onLost and ends as expired', async () => {
     const events: string[] = [];
-    const lock = new DistributedLock(new MemoryLockBackend(), {
+    const backend = new MemoryLockBackend();
+    const lock = new DistributedLock(backend, {
       hooks: {
         onLost: (info) => events.push(`lost:${info.reason}`),
       },
     });
     const acquired = await lock.tryAcquire('a', {
-      ttlMs: 30,
+      ttlMs: 10_000,
       renew: { intervalMs: 10 },
     });
     assert.ok(acquired !== null);
+    await backend.release('a', acquired.token);
     const end = await acquired!.ended;
     assert.equal(end.reason, 'expired');
     assert.equal(await acquired!.isHeld(), false);

@@ -86,7 +86,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   }
   return new Promise((resolve, reject) => {
     const timer = setTimeout(resolve, ms);
-    timer.unref?.();
     if (signal === undefined) {
       return;
     }
@@ -100,7 +99,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       reject(new LockAbortError());
     };
     signal.addEventListener('abort', onAbort, { once: true });
-    timer.unref?.();
   });
 }
 
@@ -257,7 +255,6 @@ export class DistributedLock {
             emit(() => hooks?.onLost?.({ key, token, reason: 'expired' }));
           });
       }, renewInterval);
-      renewalTimer.unref?.();
     }
 
     const lock: AcquiredLock = {
