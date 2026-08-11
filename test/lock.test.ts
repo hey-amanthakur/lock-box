@@ -214,4 +214,147 @@ describe('DistributedLock', () => {
     assert.equal(await lock.release('a', acquired!.token), true);
     assert.equal(await lock.release('a', acquired!.token), false);
   });
+
+  it('an abort during acquisition never hands out a dead lock', async () => {
+    const backend = new MemoryLockBackend();
+    const lock = new DistributedLock(backend);
+    const controller = new AbortController();
+    const original = backend.acquire.bind(backend);
+    backend.acquire = async (key: string, token: string, ttlMs: number): Promise<boolean> => {
+      const ok = await original(key, token, ttlMs);
+      if (ok) {
+        controller.abort();
+      }
+      return ok;
+    };
+    await assert.rejects(lock.tryAcquire('k', { signal: controller.signal }), LockAbortError);
+    assert.equal(await backend.get('k'), undefined);
+  });
+
+  it('ended resolves with expired when the lease lapses without renewal', async () => {
+    const events: string[] = [];
+    const lock = new DistributedLock(new MemoryLockBackend(), {
+      hooks: { onLost: (info) => events.push(`lost:${info.reason}`) },
+    });
+    const acquired = await lock.tryAcquire('a', { ttlMs: 40 });
+    assert.ok(acquired !== null);
+    const end = await acquired!.ended;
+    assert.equal(end.reason, 'expired');
+    assert.equal(await acquired!.isHeld(), false);
+    assert.deepEqual(events, ['lost:expired']);
+  });
+
+  it('abort does not leak an unhandled rejection when release fails', async () => {
+    const failing = new MemoryLockBackend();
+    failing.release = async (): Promise<boolean> => {
+      throw new Error('release boom');
+    };
+    let unhandled: unknown = null;
+    const onUnhandled = (err: unknown): void => {
+      unhandled = err;
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const lock = new DistributedLock(failing);
+      const controller = new AbortController();
+      const acquired = await lock.tryAcquire('a', { ttlMs: 1000, signal: controller.signal });
+      assert.ok(acquired !== null);
+      controller.abort();
+      const end = await acquired!.ended;
+      assert.equal(end.reason, 'aborted');
+      await sleep(30);
+      assert.equal(unhandled, null);
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandled);
+    }
+  });
+
+  it('withLock surfaces the fn error even when release fails', async () => {
+    const failing = new MemoryLockBackend();
+    failing.release = async (): Promise<boolean> => {
+      throw new Error('release boom');
+    };
+    const lock = new DistributedLock(failing);
+    await assert.rejects(
+      lock.withLock('a', async () => {
+        throw new Error('fn boom');
+      }),
+      /fn boom/,
+    );
+  });
+
+  it('withLock surfaces a release failure when fn succeeds', async () => {
+    const failing = new MemoryLockBackend();
+    failing.release = async (): Promise<boolean> => {
+      throw new Error('release boom');
+    };
+    const lock = new DistributedLock(failing);
+    await assert.rejects(lock.withLock('a', async () => 1), /release boom/);
+  });
+
+  it('auto-renew honours the ttl set by extend()', async () => {
+    const lock = new DistributedLock(new MemoryLockBackend());
+    const acquired = await lock.tryAcquire('a', { ttlMs: 1000, renew: { intervalMs: 20 } });
+    assert.ok(acquired !== null);
+    await acquired!.extend(100);
+    await sleep(50);
+    const remaining = acquired!.expiresAt - Date.now();
+    assert.ok(remaining < 300, `expected renewal to use the 100ms ttl, got ~${remaining}ms remaining`);
+    await acquired!.release();
+  });
+});
+
+describe('DistributedLock polling', () => {
+  // Wrap a real EventTarget so we can count add/removeEventListener calls; it
+  // doubles as a duck-typed AbortSignal.
+  const makeSignal = (): { signal: EventTarget; count: () => number } => {
+    const target = new EventTarget();
+    (target as unknown as { aborted: boolean }).aborted = false;
+    const originalAdd = target.addEventListener.bind(target);
+    const originalRemove = target.removeEventListener.bind(target);
+    let count = 0;
+    target.addEventListener = ((type: any, listener: any, options?: any) => {
+      if (type === 'abort') {
+        count += 1;
+      }
+      return originalAdd(type, listener, options);
+    }) as any;
+    target.removeEventListener = ((type: any, listener: any, options?: any) => {
+      if (type === 'abort') {
+        count -= 1;
+      }
+      return originalRemove(type, listener, options);
+    }) as any;
+    return { signal: target, count: () => count };
+  };
+
+  it('does not leak abort listeners across poll iterations', async () => {
+    const lock = new DistributedLock(new MemoryLockBackend(), { wait: { intervalMs: 10 } });
+    await lock.acquire('a', { ttlMs: 10_000 });
+    const { signal, count } = makeSignal();
+    await assert.rejects(
+      lock.acquire('a', {
+        maxWaitMs: 60,
+        signal: signal as unknown as AbortSignal,
+      }),
+      LockWaitTimeoutError,
+    );
+    assert.equal(count(), 0);
+  });
+
+  it('removes the abort listener when an aborted wait settles', async () => {
+    const lock = new DistributedLock(new MemoryLockBackend(), { wait: { intervalMs: 10 } });
+    await lock.acquire('a', { ttlMs: 10_000 });
+    const { signal, count } = makeSignal();
+    const promise = lock.acquire('a', {
+      maxWaitMs: 5000,
+      signal: signal as unknown as AbortSignal,
+    });
+    setTimeout(() => {
+      (signal as unknown as { aborted: boolean }).aborted = true;
+      signal.dispatchEvent(new Event('abort'));
+    }, 10);
+    await assert.rejects(promise, LockAbortError);
+    assert.equal(count(), 0);
+  });
 });

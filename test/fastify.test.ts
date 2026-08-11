@@ -86,4 +86,34 @@ describe('fastifyLockPlugin', () => {
     });
     assert.ok(error instanceof Error);
   });
+
+  it('fails the request even when onError is set', async () => {
+    const lock = new DistributedLock(new MemoryLockBackend());
+    await lock.acquire('a', { ttlMs: 10_000 });
+    const instance = createInstance();
+    const notified: unknown[] = [];
+    fastifyLockPlugin({
+      lock,
+      key: () => 'a',
+      wait: { maxWaitMs: 20, intervalMs: 5 },
+      onError: (err) => notified.push(err),
+    })(instance as never);
+
+    const reply = createReply();
+    let error: unknown;
+    const handler = instance.hooks['onRequest'] as (
+      r: unknown,
+      rp: unknown,
+      done: (err?: unknown) => void,
+    ) => void;
+
+    await new Promise<void>((resolve) => {
+      handler({}, reply, (err?: unknown) => {
+        error = err;
+        resolve();
+      });
+    });
+    assert.ok(error instanceof Error);
+    assert.equal(notified.length, 1);
+  });
 });

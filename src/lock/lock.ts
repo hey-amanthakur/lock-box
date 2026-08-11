@@ -85,17 +85,21 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     return Promise.resolve();
   }
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
     if (signal === undefined) {
+      setTimeout(resolve, ms);
       return;
     }
     if (signal.aborted) {
-      clearTimeout(timer);
       reject(new LockAbortError());
       return;
     }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
     const onAbort = (): void => {
       clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
       reject(new LockAbortError());
     };
     signal.addEventListener('abort', onAbort, { once: true });
@@ -127,6 +131,12 @@ export class DistributedLock {
     if (!acquired) {
       return null;
     }
+    if (options.signal?.aborted) {
+      // The signal may have aborted while the acquire was in flight; never hand
+      // out a lease we immediately have to give back.
+      await this.backend.release(key, token).catch(() => {});
+      throw new LockAbortError();
+    }
     return this.createLock(key, token, ttlMs, options);
   }
 
@@ -156,10 +166,21 @@ export class DistributedLock {
     options: WaitOptions = {},
   ): Promise<T> {
     const lock = await this.acquire(key, options);
+    let fnFailed = false;
     try {
       return await fn(lock);
+    } catch (error) {
+      fnFailed = true;
+      throw error;
     } finally {
-      await lock.release();
+      try {
+        await lock.release();
+      } catch (releaseError) {
+        // A release failure must not mask the error thrown by `fn`.
+        if (!fnFailed) {
+          throw releaseError;
+        }
+      }
     }
   }
 
@@ -194,6 +215,8 @@ export class DistributedLock {
     };
 
     let renewalTimer: ReturnType<typeof setInterval> | null = null;
+    let expiryTimer: ReturnType<typeof setTimeout> | null = null;
+    let currentTtlMs = ttlMs;
     let expiresAt = Date.now() + ttlMs;
 
     const clearRenewal = (): void => {
@@ -203,20 +226,44 @@ export class DistributedLock {
       }
     };
 
+    const clearExpiry = (): void => {
+      if (expiryTimer !== null) {
+        clearTimeout(expiryTimer);
+        expiryTimer = null;
+      }
+    };
+
     const finish = (reason: LockEnd['reason']): void => {
       if (endReason !== null) {
         return;
       }
       endReason = reason;
       clearRenewal();
+      clearExpiry();
       removeAbort();
       resolveEnd({ reason, at: Date.now() });
     };
 
+    // Guarantees `ended` resolves with `expired` when the lease lapses without
+    // a renewal, so callers awaiting `ended` don't hang on a silently-expired
+    // lease. Unref'd so an idle lease never keeps the process alive (the lease
+    // expires on its own and the TTL bounds any window anyway).
+    const scheduleExpiry = (at: number): void => {
+      clearExpiry();
+      expiryTimer = setTimeout(() => {
+        if (endReason === null) {
+          finish('expired');
+          emit(() => hooks?.onLost?.({ key, token, reason: 'expired' }));
+        }
+      }, Math.max(0, at - Date.now()));
+      expiryTimer.unref?.();
+    };
+
     const onAbort = (): void => {
-      const held = endReason === null;
-      if (held) {
-        void backend.release(key, token);
+      if (endReason === null) {
+        // Best-effort: release can legitimately fail (e.g. backend down), the
+        // TTL expires the lease, and this must never surface an unhandled rejection.
+        backend.release(key, token).catch(() => {});
       }
       finish('aborted');
       emit(() => hooks?.onLost?.({ key, token, reason: 'aborted' }));
@@ -229,33 +276,45 @@ export class DistributedLock {
     if (options.signal !== undefined) {
       if (options.signal.aborted) {
         onAbort();
-      } else {
-        options.signal.addEventListener('abort', onAbort, { once: true });
+        // Defensive backstop: `tryAcquire` already guards this, but never hand
+        // out a lock the caller cannot be holding.
+        throw new LockAbortError();
       }
+      options.signal.addEventListener('abort', onAbort, { once: true });
     }
 
     if (options.renew) {
       const renewInterval =
-        (typeof options.renew === 'object' && options.renew.intervalMs) ||
-        Math.max(1, Math.floor(ttlMs / 3));
+        typeof options.renew === 'object' && options.renew.intervalMs !== undefined
+          ? Math.max(1, options.renew.intervalMs)
+          : Math.max(1, Math.floor(ttlMs / 3));
       renewalTimer = setInterval(() => {
         this.backend
-          .extend(key, token, ttlMs)
+          .extend(key, token, currentTtlMs)
           .then((ok) => {
+            if (endReason !== null) {
+              return;
+            }
             if (!ok) {
               finish('expired');
               emit(() => hooks?.onLost?.({ key, token, reason: 'expired' }));
               return;
             }
-            expiresAt = Date.now() + ttlMs;
+            expiresAt = Date.now() + currentTtlMs;
+            scheduleExpiry(expiresAt);
             emit(() => hooks?.onRenew?.({ key, token, expiresAt }));
           })
           .catch(() => {
+            if (endReason !== null) {
+              return;
+            }
             finish('expired');
             emit(() => hooks?.onLost?.({ key, token, reason: 'expired' }));
           });
       }, renewInterval);
     }
+
+    scheduleExpiry(expiresAt);
 
     const lock: AcquiredLock = {
       key,
@@ -276,14 +335,16 @@ export class DistributedLock {
         if (endReason !== null) {
           throw new LockEndedError(key);
         }
-        const ttl = newTtlMs ?? ttlMs;
+        const ttl = newTtlMs ?? currentTtlMs;
         const ok = await backend.extend(key, token, ttl);
         if (!ok) {
           finish('expired');
           emit(() => hooks?.onLost?.({ key, token, reason: 'expired' }));
           throw new LockEndedError(key);
         }
+        currentTtlMs = ttl;
         expiresAt = Date.now() + ttl;
+        scheduleExpiry(expiresAt);
         emit(() => hooks?.onRenew?.({ key, token, expiresAt }));
         return new Date(expiresAt);
       },

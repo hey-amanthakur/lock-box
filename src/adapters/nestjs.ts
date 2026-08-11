@@ -102,7 +102,7 @@ export async function runLockGuard(
 
   const response = http.getResponse() as { once?(event: string, fn: () => void): void };
   const release = (): void => {
-    void acquired.release();
+    acquired.release().catch(() => {});
   };
   response.once?.('finish', release);
   response.once?.('close', release);

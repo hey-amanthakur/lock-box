@@ -30,8 +30,6 @@ function createHandler(options: FastifyLockOptions): FastifyLockHandler {
       .catch((error: unknown) => {
         if (options.onError !== undefined) {
           options.onError(error, req);
-          done();
-          return;
         }
         done(error instanceof Error ? error : new Error(String(error)));
       });

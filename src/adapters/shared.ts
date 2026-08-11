@@ -33,7 +33,9 @@ export async function runLockMiddleware<Req>(
     intervalMs: options.wait?.intervalMs,
   });
   const release = (): void => {
-    void lock.release();
+    // Runs after the response has finished, so a release failure cannot be
+    // surfaced to the client; the TTL expires the lease anyway.
+    lock.release().catch(() => {});
   };
   onFinish(release);
   options.onAcquired?.(lock, req);
