@@ -35,12 +35,13 @@ describe('DistributedLock', () => {
 
   it('acquire throws LockWaitTimeoutError when the wait elapses', async () => {
     const lock = new DistributedLock(new MemoryLockBackend(), { wait: { intervalMs: 10 } });
-    await lock.acquire('a', { ttlMs: 10_000 });
+    const held = await lock.acquire('a', { ttlMs: 10_000 });
     await assert.rejects(lock.acquire('a', { maxWaitMs: 50 }), (err) => {
       assert.ok(err instanceof LockWaitTimeoutError);
       assert.equal(err.key, 'a');
       return true;
     });
+    await held.release();
   });
 
   it('withLock runs the fn and releases in finally', async () => {
@@ -137,7 +138,7 @@ describe('DistributedLock', () => {
 
   it('abort during a wait rejects with LockAbortError', async () => {
     const lock = new DistributedLock(new MemoryLockBackend(), { wait: { intervalMs: 10 } });
-    await lock.acquire('a', { ttlMs: 10_000 });
+    const held = await lock.acquire('a', { ttlMs: 10_000 });
     const controller = new AbortController();
     const promise = lock.acquire('a', {
       maxWaitMs: 5000,
@@ -145,6 +146,7 @@ describe('DistributedLock', () => {
     });
     setTimeout(() => controller.abort(), 20);
     await assert.rejects(promise, LockAbortError);
+    await held.release();
   });
 
   it('abort while holding releases the lease and fires onLost', async () => {
@@ -276,9 +278,13 @@ describe('DistributedLock', () => {
     };
     const lock = new DistributedLock(failing);
     await assert.rejects(
-      lock.withLock('a', async () => {
-        throw new Error('fn boom');
-      }),
+      lock.withLock(
+        'a',
+        async () => {
+          throw new Error('fn boom');
+        },
+        { ttlMs: 100 },
+      ),
       /fn boom/,
     );
   });
@@ -289,7 +295,7 @@ describe('DistributedLock', () => {
       throw new Error('release boom');
     };
     const lock = new DistributedLock(failing);
-    await assert.rejects(lock.withLock('a', async () => 1), /release boom/);
+    await assert.rejects(lock.withLock('a', async () => 1, { ttlMs: 100 }), /release boom/);
   });
 
   it('auto-renew honours the ttl set by extend()', async () => {
@@ -330,7 +336,7 @@ describe('DistributedLock polling', () => {
 
   it('does not leak abort listeners across poll iterations', async () => {
     const lock = new DistributedLock(new MemoryLockBackend(), { wait: { intervalMs: 10 } });
-    await lock.acquire('a', { ttlMs: 10_000 });
+    const held = await lock.acquire('a', { ttlMs: 10_000 });
     const { signal, count } = makeSignal();
     await assert.rejects(
       lock.acquire('a', {
@@ -340,11 +346,12 @@ describe('DistributedLock polling', () => {
       LockWaitTimeoutError,
     );
     assert.equal(count(), 0);
+    await held.release();
   });
 
   it('removes the abort listener when an aborted wait settles', async () => {
     const lock = new DistributedLock(new MemoryLockBackend(), { wait: { intervalMs: 10 } });
-    await lock.acquire('a', { ttlMs: 10_000 });
+    const held = await lock.acquire('a', { ttlMs: 10_000 });
     const { signal, count } = makeSignal();
     const promise = lock.acquire('a', {
       maxWaitMs: 5000,
@@ -356,5 +363,6 @@ describe('DistributedLock polling', () => {
     }, 10);
     await assert.rejects(promise, LockAbortError);
     assert.equal(count(), 0);
+    await held.release();
   });
 });

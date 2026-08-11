@@ -246,8 +246,9 @@ export class DistributedLock {
 
     // Guarantees `ended` resolves with `expired` when the lease lapses without
     // a renewal, so callers awaiting `ended` don't hang on a silently-expired
-    // lease. Unref'd so an idle lease never keeps the process alive (the lease
-    // expires on its own and the TTL bounds any window anyway).
+    // lease. Kept ref'd: `ended` is a public contract that must settle even in a
+    // process whose only pending work is this lock; the timer is bounded by the
+    // TTL and cleared on release, so it never keeps a process alive past the lease.
     const scheduleExpiry = (at: number): void => {
       clearExpiry();
       expiryTimer = setTimeout(() => {
@@ -256,7 +257,6 @@ export class DistributedLock {
           emit(() => hooks?.onLost?.({ key, token, reason: 'expired' }));
         }
       }, Math.max(0, at - Date.now()));
-      expiryTimer.unref?.();
     };
 
     const onAbort = (): void => {

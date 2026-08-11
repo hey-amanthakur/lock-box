@@ -43,12 +43,13 @@ describe('koaLock', () => {
 
   it('throws when the lock cannot be acquired in time', async () => {
     const lock = new DistributedLock(new MemoryLockBackend());
-    await lock.acquire('a', { ttlMs: 10_000 });
+    const held = await lock.acquire('a', { ttlMs: 10_000 });
     const ctx = createCtx();
     const middleware = koaLock({
       lock,
       key: () => 'a',
       wait: { maxWaitMs: 20, intervalMs: 5 },
     });    await assert.rejects(middleware(ctx as never, async () => {}));
+    await held.release();
   });
 });

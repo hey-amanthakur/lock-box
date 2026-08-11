@@ -54,7 +54,9 @@ describe('nest lock guard', () => {
     res.emit('finish');
     await sleep(10);
     assert.equal(await req.lockBoxLock!.isHeld(), false);
-    assert.ok(await lock.tryAcquire('payments:account') !== null);
+    const reacquired = await lock.tryAcquire('payments:account');
+    assert.ok(reacquired !== null);
+    await reacquired.release();
   });
 
   it('supports a dynamic key factory', async () => {
@@ -70,20 +72,21 @@ describe('nest lock guard', () => {
       }
     }
 
-    const context = (id: string): ExecutionContextLike =>
-      makeContext(
-        { resourceId: id },
-        new Controller().run,
-        Controller,
-        new EventEmitter(),
-      );
+    const context = (req: Req): ExecutionContextLike =>
+      makeContext(req, new Controller().run, Controller, new EventEmitter());
 
     const guard = createLockGuard({ lock });
-    await guard.canActivate(context('a'));
-    await guard.canActivate(context('b'));
+    const reqA: Req = { resourceId: 'a' };
+    const reqB: Req = { resourceId: 'b' };
+    await guard.canActivate(context(reqA));
+    await guard.canActivate(context(reqB));
 
-    assert.equal(await lock.tryAcquire('resource:a'), null);
-    assert.equal(await lock.tryAcquire('resource:b'), null);
+    const a = await lock.tryAcquire('resource:a');
+    const b = await lock.tryAcquire('resource:b');
+    assert.equal(a, null);
+    assert.equal(b, null);
+    await reqA.lockBoxLock?.release();
+    await reqB.lockBoxLock?.release();
   });
 
   it('passes through when no @Lock metadata is present', async () => {
@@ -115,5 +118,6 @@ describe('nest lock guard', () => {
     const context = makeContext(req, new Controller().run, Controller, new EventEmitter());
     assert.equal(await guard.canActivate(context), true);
     assert.equal(await lock.tryAcquire('fixed'), null);
+    await req.lockBoxLock?.release();
   });
 });

@@ -63,7 +63,7 @@ describe('expressLock', () => {
 
   it('calls next(err) when the lock cannot be acquired in time', async () => {
     const lock = new DistributedLock(new MemoryLockBackend());
-    await lock.acquire('a', { ttlMs: 10_000 });
+    const held = await lock.acquire('a', { ttlMs: 10_000 });
     const res = createRes();
     const middleware = expressLock({
       lock,
@@ -83,11 +83,12 @@ describe('expressLock', () => {
       );
     });
     assert.ok(error instanceof LockWaitTimeoutError);
+    await held.release();
   });
 
   it('invokes onError as a notification hook', async () => {
     const lock = new DistributedLock(new MemoryLockBackend());
-    await lock.acquire('a', { ttlMs: 10_000 });
+    const held = await lock.acquire('a', { ttlMs: 10_000 });
     const res = createRes();
     const notified: unknown[] = [];
     const middleware = expressLock({
@@ -111,5 +112,6 @@ describe('expressLock', () => {
     assert.ok(error instanceof LockWaitTimeoutError);
     assert.equal(notified.length, 1);
     assert.ok(notified[0] instanceof LockWaitTimeoutError);
+    await held.release();
   });
 });

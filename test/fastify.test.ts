@@ -62,7 +62,7 @@ describe('fastifyLockPlugin', () => {
 
   it('calls done(err) when the lock cannot be acquired in time', async () => {
     const lock = new DistributedLock(new MemoryLockBackend());
-    await lock.acquire('a', { ttlMs: 10_000 });
+    const held = await lock.acquire('a', { ttlMs: 10_000 });
     const instance = createInstance();
     fastifyLockPlugin({
       lock,
@@ -85,11 +85,12 @@ describe('fastifyLockPlugin', () => {
       });
     });
     assert.ok(error instanceof Error);
+    await held.release();
   });
 
   it('fails the request even when onError is set', async () => {
     const lock = new DistributedLock(new MemoryLockBackend());
-    await lock.acquire('a', { ttlMs: 10_000 });
+    const held = await lock.acquire('a', { ttlMs: 10_000 });
     const instance = createInstance();
     const notified: unknown[] = [];
     fastifyLockPlugin({
@@ -115,5 +116,6 @@ describe('fastifyLockPlugin', () => {
     });
     assert.ok(error instanceof Error);
     assert.equal(notified.length, 1);
+    await held.release();
   });
 });

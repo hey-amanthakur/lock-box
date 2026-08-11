@@ -1,6 +1,6 @@
 {
   "name": "@hey-amanthakur/lock-box",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Lock-Box — a production-grade distributed mutex and lease library for Node.js. Zero runtime dependencies. Pluggable backends (in-memory, Redis), blocking acquire, TTL leases, auto-renewal, AbortSignal cancellation and framework adapters.",
   "license": "MIT",
   "author": "Aman Thakur <https://github.com/hey-amanthakur>",
